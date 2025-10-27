@@ -6,7 +6,7 @@ import { PDFDocument, PDFFont, rgb } from 'pdf-lib';
 import { Paragraph, TextRun, Document, Packer } from 'docx';
 import { stringify } from 'csv-stringify/sync';
 import { parse } from 'csv-parse/sync';
-import { fontMap } from "src/configs/fonts.config";
+import { fontMap } from "../../configs/fonts.config";
 import { EventsGateway } from "../events/events.gateway";
 import pLimit from "p-limit"; 
 import axios from 'axios';
