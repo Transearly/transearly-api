@@ -8,7 +8,6 @@ import { stringify } from 'csv-stringify/sync';
 import { parse } from 'csv-parse/sync';
 import { fontMap } from "../../configs/fonts.config";
 import { EventsGateway } from "../events/events.gateway";
-import pLimit from "p-limit"; 
 import axios from 'axios';
 import * as ExcelJS from 'exceljs';
 import * as fontkit from '@pdf-lib/fontkit';
@@ -190,6 +189,7 @@ export class TranslatorProcessor {
         targetLanguage: string,
         jobId: string | number
         ): Promise<Buffer> {
+        const { default: pLimit } = await import('p-limit');
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(fileBuffer as any);
 
@@ -276,6 +276,7 @@ export class TranslatorProcessor {
         targetLanguage: string,
         jobId: string | number
     ): Promise<{ slideIndex: number; translatedText: string }[]> {
+        const { default: pLimit } = await import('p-limit');
         const tempFilePath = path.join(process.cwd(), `temp-${jobId}.pptx`);
         await fs.writeFile(tempFilePath, fileBuffer);
 
@@ -329,6 +330,7 @@ export class TranslatorProcessor {
 
 
     private async chunkAndTranslateText(text: string, targetLanguage: string, jobId: string | number): Promise<string> {
+        const { default: pLimit } = await import('p-limit');
         const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 4000, chunkOverlap: 200 });
         const chunks = await splitter.splitText(text);
 
