@@ -18,6 +18,7 @@ describe('TranslatorController', () => {
     startTranslationJob: jest.fn(),
     getJobStatus: jest.fn(),
     translateTextDirect: jest.fn(),
+    translateImageDirect: jest.fn(),
   };
 
   const mockConfigService = {
@@ -40,6 +41,24 @@ describe('TranslatorController', () => {
     mimetype,
     size,
     buffer: Buffer.from('mock file content'),
+    stream: {} as any,
+    destination: '',
+    filename: '',
+    path: '',
+  });
+
+  // Mock image file data for image translation tests
+  const createMockImageFile = (
+    mimetype: string = 'image/jpeg',
+    size: number = 5000,
+    originalname: string = 'test.jpg',
+  ): Express.Multer.File => ({
+    fieldname: 'file',
+    originalname,
+    encoding: '7bit',
+    mimetype,
+    size,
+    buffer: Buffer.from('mock image content data'),
     stream: {} as any,
     destination: '',
     filename: '',
@@ -484,6 +503,164 @@ describe('TranslatorController', () => {
       expect(mockTranslatorService.translateTextDirect).toHaveBeenCalledWith(
         textWithWhitespace,
         'Spanish',
+      );
+    });
+  });
+
+  describe('translateImageWithAI', () => {
+    it('should translate image successfully', async () => {
+      const mockImageFile = createMockImageFile('image/jpeg', 5000, 'test.jpg');
+      const mockTargetLanguage = 'Vietnamese';
+      const mockTranslatedText = 'Translated text from image';
+
+      mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+
+      const result = await controller.translateImageWithAI(mockImageFile, mockTargetLanguage);
+
+      expect(result).toEqual({
+        success: true,
+        targetLanguage: mockTargetLanguage,
+        translatedText: mockTranslatedText,
+      });
+
+      expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
+        mockImageFile,
+        mockTargetLanguage,
+      );
+    });
+
+    it('should use default target language when not provided', async () => {
+      const mockImageFile = createMockImageFile('image/png', 3000, 'test.png');
+      const mockTranslatedText = 'Default language translation';
+
+      mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+
+      const result = await controller.translateImageWithAI(mockImageFile);
+
+      expect(result.targetLanguage).toBe('Vietnamese');
+      expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
+        mockImageFile,
+        'Vietnamese',
+      );
+    });
+
+    it('should throw error when no file is provided', async () => {
+      await expect(
+        controller.translateImageWithAI(undefined as any, 'Vietnamese'),
+      ).rejects.toThrow(
+        new HttpException('Image file is required', HttpStatus.BAD_REQUEST),
+      );
+
+      expect(mockTranslatorService.translateImageDirect).not.toHaveBeenCalled();
+    });
+
+    it('should handle different image formats', async () => {
+      const imageFormats = [
+        { mimetype: 'image/jpeg', filename: 'test.jpg' },
+        { mimetype: 'image/png', filename: 'test.png' },
+        { mimetype: 'image/gif', filename: 'test.gif' },
+        { mimetype: 'image/webp', filename: 'test.webp' },
+        { mimetype: 'image/bmp', filename: 'test.bmp' },
+      ];
+
+      for (const format of imageFormats) {
+        const mockImageFile = createMockImageFile(format.mimetype, 4000, format.filename);
+        const mockTranslatedText = `Translated from ${format.filename}`;
+
+        mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+
+        const result = await controller.translateImageWithAI(mockImageFile, 'Spanish');
+
+        expect(result.translatedText).toBe(mockTranslatedText);
+        expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
+          mockImageFile,
+          'Spanish',
+        );
+      }
+    });
+
+    it('should handle translation service errors', async () => {
+      const mockImageFile = createMockImageFile();
+      const errorMessage = 'AI vision model unavailable';
+
+      mockTranslatorService.translateImageDirect.mockRejectedValue(
+        new Error(errorMessage),
+      );
+
+      await expect(
+        controller.translateImageWithAI(mockImageFile, 'French'),
+      ).rejects.toThrow(
+        new HttpException(
+          `AI image translation failed: ${errorMessage}`,
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        ),
+      );
+    });
+
+    it('should handle large image files', async () => {
+      const largeImageFile = createMockImageFile('image/jpeg', 10 * 1024 * 1024, 'large.jpg'); // 10MB
+      const mockTranslatedText = 'Translation from large image';
+
+      mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+
+      const result = await controller.translateImageWithAI(largeImageFile, 'German');
+
+      expect(result.translatedText).toBe(mockTranslatedText);
+      expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
+        largeImageFile,
+        'German',
+      );
+    });
+
+    it('should handle different target languages', async () => {
+      const mockImageFile = createMockImageFile();
+      const languages = ['Spanish', 'French', 'German', 'Japanese', 'Korean'];
+
+      for (const language of languages) {
+        const mockTranslatedText = `Translation in ${language}`;
+        mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+
+        const result = await controller.translateImageWithAI(mockImageFile, language);
+
+        expect(result.targetLanguage).toBe(language);
+        expect(result.translatedText).toBe(mockTranslatedText);
+        expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
+          mockImageFile,
+          language,
+        );
+      }
+    });
+
+    it('should handle API timeout errors', async () => {
+      const mockImageFile = createMockImageFile();
+      const timeoutError = new Error('Request timeout');
+
+      mockTranslatorService.translateImageDirect.mockRejectedValue(timeoutError);
+
+      await expect(
+        controller.translateImageWithAI(mockImageFile, 'Vietnamese'),
+      ).rejects.toThrow(
+        new HttpException(
+          'AI image translation failed: Request timeout',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        ),
+      );
+    });
+
+    it('should handle empty translation results gracefully', async () => {
+      const mockImageFile = createMockImageFile();
+      
+      mockTranslatorService.translateImageDirect.mockRejectedValue(
+        new Error('Invalid or empty AI response.')
+      );
+
+      await expect(
+        controller.translateImageWithAI(mockImageFile, 'Vietnamese'),
+      ).rejects.toThrow(
+        new HttpException(
+          'AI image translation failed: Invalid or empty AI response.',
+          HttpStatus.INTERNAL_SERVER_ERROR,
+        ),
       );
     });
   });
