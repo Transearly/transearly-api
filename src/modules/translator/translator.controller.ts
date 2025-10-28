@@ -195,5 +195,44 @@ export class TranslatorController {
       );
     }
   }
+
+  @Post('image')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Translate text in an image directly' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        targetLanguage: { type: 'string', example: 'Vietnamese' },
+      },
+    },
+  })
+  async translateImageWithAI(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('targetLanguage') targetLanguage = 'Vietnamese',
+  ) {
+    if (!file) {
+      throw new HttpException('Image file is required', HttpStatus.BAD_REQUEST);
+    }
+
+    try {
+      const result = await this.translationService.translateImageDirect(
+        file,
+        targetLanguage,
+      );
+      return {
+        success: true,
+        targetLanguage,
+        translatedText: result,
+      };
+    } catch (error) {
+      throw new HttpException(
+        `AI image translation failed: ${error.message}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 }
 
