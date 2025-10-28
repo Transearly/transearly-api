@@ -16,7 +16,7 @@ import {
 } from '@nestjs/common';
 import { TranslatorService } from './translator.service';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiBody, ApiConsumes } from '@nestjs/swagger';
+import { ApiBody, ApiConsumes, ApiOperation } from '@nestjs/swagger';
 import { createReadStream, statSync, unlinkSync } from 'fs';
 import e, { Response } from 'express';
 import * as path from 'path';
@@ -33,6 +33,7 @@ export class TranslatorController {
 
   @Post('upload')
   @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Upload a document for translation' })
   @ApiBody({
     schema: {
       type: 'object',
@@ -101,56 +102,98 @@ export class TranslatorController {
     return this.translationService.getJobStatus(jobId);
   }
 
+
+  // Download translated file
   @Get('download/:fileName')
   downloadFile(@Param('fileName') fileName: string, @Res() res: Response) {
-    if (!fileName || fileName.includes('..')) {
-      throw new HttpException(
-        'Invalid filename.', 
-        HttpStatus.BAD_REQUEST
-      );
+      if (!fileName || fileName.includes('..')) {
+        throw new HttpException(
+          'Invalid filename.', 
+          HttpStatus.BAD_REQUEST
+        );
+      }
+      const filePath = path.join(process.cwd(), 'translated-files', fileName);
+
+      try {
+        statSync(filePath);
+      } catch (error) {
+        throw new HttpException(
+          'File not found.', 
+          HttpStatus.NOT_FOUND
+        );
+      }
+
+      const fileExtension = path.extname(fileName).toLowerCase();
+      let contentType = '';
+
+      if (fileExtension === '.pdf') {
+        contentType = 'application/pdf';
+      } else if (fileExtension === '.docx') {
+        contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      } else if (fileExtension === '.xlsx') { 
+        contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      } else if (fileExtension === '.csv') {
+        contentType = 'text/csv';
+      } else if (fileExtension === '.txt') {
+        contentType = 'text/plain';
+      } else if (fileExtension === '.pptx') {
+        contentType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      } else {
+        throw new HttpException('Unsupported file type for download.', HttpStatus.BAD_REQUEST);
+      }
+
+      const fileStream = createReadStream(filePath);
+
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
+      
+      fileStream.pipe(res);
+      res.on('close', () => {
+      try {
+          unlinkSync(filePath);
+      } catch (err) {
+          console.error(`Error deleting file ${fileName}:`, err);
+        }
+    });
+  }
+
+  // Translate text directly
+  @Post('text')
+  @ApiOperation({ summary: 'Translate text directly' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', example: 'Hello, how are you?' },
+        targetLanguage: { type: 'string', example: 'Vietnamese' },
+      },
+      required: ['text'],
+    },
+  })
+  async translateText(
+    @Body('text') text: string,
+    @Body('targetLanguage') targetLanguage = 'Vietnamese',
+  ) {
+    if (!text || !text.trim()) {
+      throw new HttpException('Text is required.', HttpStatus.BAD_REQUEST);
     }
-    const filePath = path.join(process.cwd(), 'translated-files', fileName);
 
     try {
-      statSync(filePath);
+      const translated = await this.translationService.translateTextDirect(
+        text,
+        targetLanguage,
+      );
+      return {
+        success: true,
+        targetLanguage,
+        translatedText: translated,
+      };
     } catch (error) {
       throw new HttpException(
-        'File not found.', 
-        HttpStatus.NOT_FOUND
+        `Translation failed: ${error.message}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
-
-    const fileExtension = path.extname(fileName).toLowerCase();
-    let contentType = '';
-
-    if (fileExtension === '.pdf') {
-      contentType = 'application/pdf';
-    } else if (fileExtension === '.docx') {
-      contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    } else if (fileExtension === '.xlsx') { 
-      contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    } else if (fileExtension === '.csv') {
-      contentType = 'text/csv';
-    } else if (fileExtension === '.txt') {
-      contentType = 'text/plain';
-    } else if (fileExtension === '.pptx') {
-      contentType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-    } else {
-      throw new HttpException('Unsupported file type for download.', HttpStatus.BAD_REQUEST);
-    }
-
-    const fileStream = createReadStream(filePath);
-
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename=${fileName}`);
-    
-    fileStream.pipe(res);
-    res.on('close', () => {
-    try {
-        unlinkSync(filePath);
-    } catch (err) {
-        console.error(`Error deleting file ${fileName}:`, err);
-      }
-  });
   }
 }
+
