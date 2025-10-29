@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import axios from 'axios';
 import vision from '@google-cloud/vision';
+import { SpeechClient } from '@google-cloud/speech';
 
 @Injectable()
 export class TranslatorService {
@@ -286,5 +287,129 @@ export class TranslatorService {
     }
 
     return result;
+  }
+
+  // ================== AUDIO TRANSLATION ==================
+  async translateAudioDirect(file: Express.Multer.File, sourceLanguage: string, targetLanguage: string): Promise<any> {
+    try {
+      console.log('[Speech API] Starting audio transcription...');
+      console.log('[Speech API] File size:', file.size, 'bytes');
+      console.log('[Speech API] File type:', file.mimetype);
+      console.log('[Speech API] Source language:', sourceLanguage);
+
+      // Step 1: Convert audio to text using Google Cloud Speech-to-Text
+      const client = new SpeechClient();
+
+      // Determine audio encoding based on file type
+      let encoding: 'MP3' | 'LINEAR16' | 'FLAC' | 'OGG_OPUS' | 'WEBM_OPUS' = 'MP3';
+
+      if (file.mimetype === 'audio/wav' || file.mimetype === 'audio/wave') {
+        encoding = 'LINEAR16';
+      } else if (file.mimetype === 'audio/flac') {
+        encoding = 'FLAC';
+      } else if (file.mimetype === 'audio/ogg') {
+        encoding = 'OGG_OPUS';
+      } else if (file.mimetype === 'audio/webm') {
+        encoding = 'WEBM_OPUS';
+      } else if (file.mimetype === 'audio/mp4' || file.mimetype === 'audio/x-m4a' || file.mimetype === 'audio/3gpp') {
+        // M4A and 3GP files - Google Speech API will auto-detect
+        encoding = 'MP3'; // Use MP3 as default, API will handle M4A/3GP
+      }
+
+      const audio = {
+        content: file.buffer.toString('base64'),
+      };
+
+      // Map language codes to Google Speech API language codes
+      const languageCodeMap: Record<string, string> = {
+        'auto': 'vi-VN',  // Default to Vietnamese when auto
+        'vi': 'vi-VN',
+        'en': 'en-US',
+        'es': 'es-ES',
+        'fr': 'fr-FR',
+        'de': 'de-DE',
+        'ja': 'ja-JP',
+        'ko': 'ko-KR',
+        'zh': 'zh-CN',
+        'th': 'th-TH',
+        'id': 'id-ID',
+      };
+
+      // Get primary language code
+      const primaryLanguageCode = languageCodeMap[sourceLanguage] || 'vi-VN';
+
+      // Build alternative language codes list (exclude the primary one)
+      const allLanguages = ['vi-VN', 'en-US', 'es-ES', 'fr-FR', 'de-DE', 'ja-JP', 'ko-KR', 'zh-CN', 'zh-TW', 'th-TH', 'id-ID'];
+      const alternativeLanguageCodes = sourceLanguage === 'auto'
+        ? allLanguages.filter(lang => lang !== primaryLanguageCode)
+        : []; // If specific language is selected, don't use alternatives
+
+      const config = {
+        encoding: encoding,
+        sampleRateHertz: 16000,
+        languageCode: primaryLanguageCode,
+        ...(alternativeLanguageCodes.length > 0 && { alternativeLanguageCodes }),
+        enableAutomaticPunctuation: true,
+        model: 'latest_long',  // Use latest model for better accuracy
+        useEnhanced: true,     // Enhanced model for better accuracy
+        audioChannelCount: 1,  // Mono audio
+      };
+
+      console.log('[Speech API] Config:', JSON.stringify({
+        languageCode: config.languageCode,
+        alternativeLanguageCodes: config.alternativeLanguageCodes
+      }));
+
+      const request = {
+        audio: audio,
+        config: config,
+      };
+
+      console.log('[Speech API] Sending request to Google Speech-to-Text...');
+      const [response] = await client.recognize(request);
+
+      console.log('[Speech API] Response received:', JSON.stringify(response, null, 2));
+
+      const transcription = response.results
+        ?.map((result: any) => result.alternatives?.[0]?.transcript)
+        .filter(Boolean)
+        .join('\n') || '';
+
+      // Log detected language
+      const detectedLanguage = response.results?.[0]?.languageCode || 'unknown';
+      console.log('[Speech API] Detected language:', detectedLanguage);
+
+      if (!transcription) {
+        console.log('[Speech API] No speech detected in audio');
+        return {
+          success: false,
+          message: 'No speech detected in the audio file',
+          originalText: '',
+          translatedText: '',
+        };
+      }
+
+      console.log('[Speech API] Transcription completed:', transcription.substring(0, 100) + '...');
+
+      // Step 2: Translate the transcribed text
+      console.log('[Translation API] Starting translation to', targetLanguage);
+      const translatedText = await this.translateTextDirect(transcription, targetLanguage);
+
+      console.log('[Translation API] Translation completed');
+
+      return {
+        success: true,
+        originalText: transcription,
+        translatedText: translatedText,
+        audioDetails: {
+          duration: response.results?.[0]?.resultEndTime?.seconds || 0,
+          detectedLanguage: detectedLanguage,  // Actual detected language
+          primaryLanguage: config.languageCode, // Primary config language
+        },
+      };
+    } catch (error) {
+      console.error('[Audio Translation] Error:', error.message);
+      throw new Error(`Audio translation failed: ${error.message}`);
+    }
   }
 }

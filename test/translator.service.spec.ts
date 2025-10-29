@@ -14,12 +14,21 @@ const mockVisionClient = {
   textDetection: jest.fn().mockRejectedValue(new Error('Google Cloud Vision not configured in test environment')),
 };
 
+// Mock Google Cloud Speech
+const mockSpeechClient = {
+  recognize: jest.fn().mockRejectedValue(new Error('Google Cloud Speech not configured in test environment')),
+};
+
 jest.mock('@google-cloud/vision', () => ({
   __esModule: true,
   default: {
     ImageAnnotatorClient: jest.fn().mockImplementation(() => mockVisionClient),
   },
   ImageAnnotatorClient: jest.fn().mockImplementation(() => mockVisionClient),
+}));
+
+jest.mock('@google-cloud/speech', () => ({
+  SpeechClient: jest.fn().mockImplementation(() => mockSpeechClient),
 }));
 
 describe('TranslatorService', () => {
@@ -1226,6 +1235,252 @@ describe('TranslatorService', () => {
         }),
         expect.any(Object),
       );
+    });
+  });
+
+  describe('translateAudioDirect', () => {
+    beforeEach(() => {
+      mockSpeechClient.recognize.mockReset();
+    });
+
+    const createMockAudioFile = (
+      mimetype: string = 'audio/mp3',
+      size: number = 50000,
+      originalname: string = 'test.mp3',
+    ): Express.Multer.File => ({
+      fieldname: 'file',
+      originalname,
+      encoding: '7bit',
+      mimetype,
+      size,
+      buffer: Buffer.from('mock audio data'),
+      stream: {} as any,
+      destination: '',
+      filename: '',
+      path: '',
+    });
+
+    it('should translate audio successfully with Google Speech-to-Text', async () => {
+      const mockAudioFile = createMockAudioFile();
+      const mockTranscription = 'This is a test transcription';
+      const mockTranslation = 'Đây là bản dịch thử nghiệm';
+
+      // Mock Speech-to-Text response
+      mockSpeechClient.recognize.mockResolvedValue([
+        {
+          results: [
+            {
+              alternatives: [{ transcript: mockTranscription }],
+              languageCode: 'en-US',
+              resultEndTime: { seconds: 30 },
+            },
+          ],
+        },
+      ]);
+
+      // Mock translation response
+      mockedAxios.post.mockResolvedValue({
+        data: {
+          choices: [
+            {
+              message: { content: mockTranslation },
+            },
+          ],
+        },
+      });
+
+      const result = await service.translateAudioDirect(
+        mockAudioFile,
+        'en',
+        'Vietnamese',
+      );
+
+      expect(result).toEqual({
+        success: true,
+        originalText: mockTranscription,
+        translatedText: mockTranslation,
+        audioDetails: {
+          duration: 30,
+          detectedLanguage: 'en-US',
+          primaryLanguage: 'en-US',
+        },
+      });
+
+      // Verify Speech-to-Text config
+      expect(mockSpeechClient.recognize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            encoding: 'MP3',
+            languageCode: 'en-US',
+            enableAutomaticPunctuation: true,
+            model: 'latest_long',
+            useEnhanced: true,
+          }),
+        }),
+      );
+    });
+
+    it('should handle different audio formats correctly', async () => {
+      const audioFormats = [
+        { mimetype: 'audio/wav', encoding: 'LINEAR16', filename: 'test.wav' },
+        { mimetype: 'audio/flac', encoding: 'FLAC', filename: 'test.flac' },
+        { mimetype: 'audio/ogg', encoding: 'OGG_OPUS', filename: 'test.ogg' },
+        { mimetype: 'audio/webm', encoding: 'WEBM_OPUS', filename: 'test.webm' },
+        { mimetype: 'audio/mp4', encoding: 'MP3', filename: 'test.m4a' },
+      ];
+
+      for (const format of audioFormats) {
+        const mockAudioFile = createMockAudioFile(format.mimetype, 50000, format.filename);
+
+        mockSpeechClient.recognize.mockResolvedValue([
+          {
+            results: [
+              {
+                alternatives: [{ transcript: 'Test' }],
+                languageCode: 'en-US',
+                resultEndTime: { seconds: 10 },
+              },
+            ],
+          },
+        ]);
+
+        mockedAxios.post.mockResolvedValue({
+          data: {
+            choices: [
+              {
+                message: { content: 'Kiểm tra' },
+              },
+            ],
+          },
+        });
+
+        const result = await service.translateAudioDirect(
+          mockAudioFile,
+          'en',
+          'Vietnamese',
+        );
+
+        expect(result.success).toBe(true);
+        expect(mockSpeechClient.recognize).toHaveBeenCalledWith(
+          expect.objectContaining({
+            config: expect.objectContaining({
+              encoding: format.encoding,
+            }),
+          }),
+        );
+      }
+    });
+
+    it('should handle auto language detection', async () => {
+      const mockAudioFile = createMockAudioFile();
+
+      mockSpeechClient.recognize.mockResolvedValue([
+        {
+          results: [
+            {
+              alternatives: [{ transcript: 'Test content' }],
+              languageCode: 'en-US',
+              resultEndTime: { seconds: 15 },
+            },
+          ],
+        },
+      ]);
+
+      mockedAxios.post.mockResolvedValue({
+        data: {
+          choices: [
+            {
+              message: { content: 'Nội dung thử nghiệm' },
+            },
+          ],
+        },
+      });
+
+      const result = await service.translateAudioDirect(
+        mockAudioFile,
+        'auto',
+        'Vietnamese',
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockSpeechClient.recognize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            languageCode: 'vi-VN',
+            alternativeLanguageCodes: expect.arrayContaining([
+              'en-US',
+              'es-ES',
+              'fr-FR',
+              'de-DE',
+              'ja-JP',
+              'ko-KR',
+              'zh-CN',
+            ]),
+          }),
+        }),
+      );
+    });
+
+    it('should handle no speech detected', async () => {
+      const mockAudioFile = createMockAudioFile();
+
+      mockSpeechClient.recognize.mockResolvedValue([
+        {
+          results: [],
+        },
+      ]);
+
+      const result = await service.translateAudioDirect(
+        mockAudioFile,
+        'en',
+        'Vietnamese',
+      );
+
+      expect(result).toEqual({
+        success: false,
+        message: 'No speech detected in the audio file',
+        originalText: '',
+        translatedText: '',
+      });
+
+      // Should not call translation API
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('should handle Speech-to-Text API errors', async () => {
+      const mockAudioFile = createMockAudioFile();
+
+      mockSpeechClient.recognize.mockRejectedValue(
+        new Error('Speech API error'),
+      );
+
+      await expect(
+        service.translateAudioDirect(mockAudioFile, 'en', 'Vietnamese'),
+      ).rejects.toThrow('Audio translation failed: Speech API error');
+    });
+
+    it('should handle translation API errors', async () => {
+      const mockAudioFile = createMockAudioFile();
+
+      mockSpeechClient.recognize.mockResolvedValue([
+        {
+          results: [
+            {
+              alternatives: [{ transcript: 'Test content' }],
+              languageCode: 'en-US',
+              resultEndTime: { seconds: 15 },
+            },
+          ],
+        },
+      ]);
+
+      mockedAxios.post.mockRejectedValue(
+        new Error('Translation API error'),
+      );
+
+      await expect(
+        service.translateAudioDirect(mockAudioFile, 'en', 'Vietnamese'),
+      ).rejects.toThrow('Audio translation failed: Translation API error');
     });
   });
 
