@@ -57,3 +57,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Token
 tiktok-token.json
+
+# Google Cloud credentials
+google-cloud-key.json
+*-key.json

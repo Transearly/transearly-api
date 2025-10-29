@@ -198,7 +198,7 @@ export class TranslatorController {
 
   @Post('image')
   @UseInterceptors(FileInterceptor('file'))
-  @ApiOperation({ summary: 'Translate text in an image directly' })
+  @ApiOperation({ summary: 'Translate text in an image directly with bounding boxes' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -225,7 +225,7 @@ export class TranslatorController {
       return {
         success: true,
         targetLanguage,
-        translatedText: result,
+        segments: result.segments,
       };
     } catch (error) {
       throw new HttpException(
