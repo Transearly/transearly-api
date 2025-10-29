@@ -234,5 +234,63 @@ export class TranslatorController {
       );
     }
   }
+
+  @Post('audio')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Translate speech from audio file (MP3, WAV, FLAC, etc.)' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary', description: 'Audio file (MP3, WAV, FLAC, OGG, WEBM)' },
+        sourceLanguage: { type: 'string', example: 'auto', description: 'Source language code (auto, vi, en, es, fr, de, ja, ko, zh, th)' },
+        targetLanguage: { type: 'string', example: 'Vietnamese' },
+      },
+    },
+  })
+  async translateAudio(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('sourceLanguage') sourceLanguage = 'auto',
+    @Body('targetLanguage') targetLanguage = 'Vietnamese',
+  ) {
+    if (!file) {
+      throw new HttpException('Audio file is required', HttpStatus.BAD_REQUEST);
+    }
+
+    const allowedAudioMimeTypes = [
+      'audio/mpeg',      // MP3
+      'audio/mp3',       // MP3 alternative
+      'audio/mp4',       // M4A (from iOS/Expo recordings)
+      'audio/x-m4a',     // M4A alternative
+      'audio/wav',       // WAV
+      'audio/wave',      // WAV alternative
+      'audio/flac',      // FLAC
+      'audio/ogg',       // OGG
+      'audio/webm',      // WEBM
+      'audio/3gpp',      // 3GP (from Android recordings)
+    ];
+
+    if (!allowedAudioMimeTypes.includes(file.mimetype)) {
+      throw new HttpException(
+        'Unsupported audio format. Supported formats: MP3, M4A, WAV, FLAC, OGG, WEBM, 3GP',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    try {
+      const result = await this.translationService.translateAudioDirect(
+        file,
+        sourceLanguage,
+        targetLanguage,
+      );
+      return result;
+    } catch (error) {
+      throw new HttpException(
+        `Audio translation failed: ${error.message}`,
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 }
 
