@@ -109,6 +109,9 @@
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
+    "transformIgnorePatterns": [
+      "node_modules/(?!(p-limit|yocto-queue)/)"
+    ],
     "collectCoverageFrom": [
       "src/modules/**/*.controller.ts",
       "src/modules/**/*.service.ts",

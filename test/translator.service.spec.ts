@@ -3,10 +3,24 @@ import { TranslatorService } from '../src/modules/translator/translator.service'
 import { getQueueToken } from '@nestjs/bull';
 import { Queue, Job } from 'bull';
 import axios from 'axios';
+import { ImageAnnotatorClient } from '@google-cloud/vision';
 
 // Mock axios
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
+
+// Mock Google Cloud Vision
+const mockVisionClient = {
+  textDetection: jest.fn().mockRejectedValue(new Error('Google Cloud Vision not configured in test environment')),
+};
+
+jest.mock('@google-cloud/vision', () => ({
+  __esModule: true,
+  default: {
+    ImageAnnotatorClient: jest.fn().mockImplementation(() => mockVisionClient),
+  },
+  ImageAnnotatorClient: jest.fn().mockImplementation(() => mockVisionClient),
+}));
 
 describe('TranslatorService', () => {
   let service: TranslatorService;
@@ -561,20 +575,129 @@ describe('TranslatorService', () => {
         expect.any(Object),
       );
     });
+
+    it('should use getHeaders method for API calls', async () => {
+      mockedAxios.post.mockResolvedValue(mockTranslationResponse);
+
+      await service.translateTextDirect('Test', 'French');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Object),
+        {
+          headers: {
+            Authorization: 'Bearer test-api-key',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'http://localhost:5010',
+            'X-Title': 'Transearly Service',
+          },
+        },
+      );
+    });
   });
 
   describe('translateImageDirect', () => {
+    const mockVisionResponse = {
+      textAnnotations: [
+        {
+          description: 'Sample text',
+          boundingPoly: {
+            vertices: [
+              { x: 10, y: 10 },
+              { x: 100, y: 10 },
+              { x: 100, y: 50 },
+              { x: 10, y: 50 },
+            ],
+          },
+        },
+      ],
+      fullTextAnnotation: {
+        pages: [
+          {
+            width: 1000,
+            height: 800,
+            blocks: [
+              {
+                paragraphs: [
+                  {
+                    words: [
+                      {
+                        symbols: [
+                          { text: 'S' },
+                          { text: 'a' },
+                          { text: 'm' },
+                          { text: 'p' },
+                          { text: 'l' },
+                          { text: 'e' },
+                        ],
+                        boundingBox: {
+                          vertices: [
+                            { x: 10, y: 10 },
+                            { x: 60, y: 10 },
+                            { x: 60, y: 30 },
+                            { x: 10, y: 30 },
+                          ],
+                        },
+                      },
+                      {
+                        symbols: [
+                          { text: 't' },
+                          { text: 'e' },
+                          { text: 'x' },
+                          { text: 't' },
+                        ],
+                        boundingBox: {
+                          vertices: [
+                            { x: 70, y: 10 },
+                            { x: 100, y: 10 },
+                            { x: 100, y: 30 },
+                            { x: 70, y: 30 },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+
     const mockImageTranslationResponse = {
       data: {
         choices: [
           {
             message: {
-              content: 'Translated text from image',
+              content: 'Văn bản mẫu',
             },
           },
         ],
       },
     };
+
+    const mockAIVisionJSONResponse = {
+      data: {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                segments: [
+                  {
+                    position: { x: 10, y: 20, width: 30, height: 15 },
+                    original: 'Sample text',
+                    translated: 'Văn bản mẫu',
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      },
+    };
+
+    // use top-level mockVisionClient defined with jest.mock
 
     const createMockImageFile = (
       mimetype: string = 'image/jpeg',
@@ -593,16 +716,95 @@ describe('TranslatorService', () => {
       path: '',
     });
 
-    it('should translate image successfully', async () => {
+    // Suppress console logs during image translation tests to keep output clean
+    let consoleLogSpy: jest.SpyInstance;
+    let consoleErrorSpy: jest.SpyInstance;
+
+    beforeAll(() => {
+      consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
+      consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+    });
+
+    afterAll(() => {
+      consoleLogSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    });
+
+    beforeEach(() => {
+      // Reset the mock before each test with default rejection
+      (mockVisionClient as any).textDetection.mockReset();
+      (mockVisionClient as any).textDetection.mockRejectedValue(new Error('Google Cloud Vision not configured in test environment'));
+    });
+
+    it('should use Google Vision results to group segments and map translations', async () => {
       const mockImageFile = createMockImageFile();
-      mockedAxios.post.mockResolvedValue(mockImageTranslationResponse);
+
+      // Vision returns detections and full text annotation
+      mockVisionClient.textDetection.mockResolvedValue([
+        {
+          textAnnotations: mockVisionResponse.textAnnotations,
+          fullTextAnnotation: mockVisionResponse.fullTextAnnotation,
+        },
+      ] as any);
+
+      // Batch translate returns one line matching segments count
+      mockedAxios.post.mockResolvedValue({
+        data: {
+          choices: [
+            {
+              message: { content: 'Văn bản mẫu' },
+            },
+          ],
+        },
+      });
+
+      const result = await service.translateImageDirect(mockImageFile, 'Vietnamese');
+
+      expect(result.segments).toHaveLength(1);
+      expect(result.segments[0]).toEqual(
+        expect.objectContaining({
+          original: 'Sample text',
+          translated: 'Văn bản mẫu',
+          position: expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+        }),
+      );
+
+      // Ensure it did not fallback
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          messages: [
+            expect.objectContaining({ role: 'system' }),
+            expect.objectContaining({ role: 'user', content: 'Sample text' }),
+          ],
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it('should translate image successfully using Google Cloud Vision', async () => {
+      const mockImageFile = createMockImageFile();
+      
+      // Since Google Vision may fail in test environment, handle fallback case
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Google Vision not available'));
+      mockedAxios.post.mockResolvedValue(mockAIVisionJSONResponse);
 
       const result = await service.translateImageDirect(
         mockImageFile,
         'Vietnamese',
       );
 
-      expect(result).toBe('Translated text from image');
+      expect(result).toEqual({
+        segments: [
+          {
+            position: { x: 10, y: 20, width: 30, height: 15 },
+            original: 'Sample text',
+            translated: 'Văn bản mẫu',
+          },
+        ],
+      });
+
+      // Should fallback to AI vision
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'https://api.openrouter.ai/api',
         {
@@ -615,7 +817,7 @@ describe('TranslatorService', () => {
             {
               role: 'user',
               content: [
-                { type: 'text', text: 'Translate this image:' },
+                { type: 'text', text: 'Detect and translate all text in this image:' },
                 {
                   type: 'image_url',
                   image_url: `data:${mockImageFile.mimetype};base64,${mockImageFile.buffer.toString('base64')}`,
@@ -624,15 +826,94 @@ describe('TranslatorService', () => {
             },
           ],
           temperature: 0,
+          response_format: { type: 'json_object' },
         },
-        {
-          headers: {
-            Authorization: 'Bearer test-api-key',
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'http://localhost:5010',
-            'X-Title': 'Transearly Service',
+        expect.any(Object),
+      );
+    });
+
+    it('should return empty segments when no text is detected', async () => {
+      const mockImageFile = createMockImageFile();
+      
+      // Vision returns success with no detections
+      ;(mockVisionClient as any).textDetection.mockResolvedValue([
+        { textAnnotations: [], fullTextAnnotation: undefined },
+      ] as any);
+
+      const result = await service.translateImageDirect(
+        mockImageFile,
+        'Vietnamese',
+      );
+
+      expect(result).toEqual({ segments: [] });
+      // Should not fallback to AI vision when Vision succeeds with no text
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('should fallback to AI vision when Google Cloud Vision fails', async () => {
+      const mockImageFile = createMockImageFile();
+      const mockAIVisionResponse = {
+        data: {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  segments: [
+                    {
+                      position: { x: 10, y: 20, width: 30, height: 15 },
+                      original: 'Fallback text',
+                      translated: 'Văn bản dự phòng',
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        },
+      };
+
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Vision API error'));
+      mockedAxios.post.mockResolvedValue(mockAIVisionResponse);
+
+      const result = await service.translateImageDirect(
+        mockImageFile,
+        'Vietnamese',
+      );
+
+      expect(result).toEqual({
+        segments: [
+          {
+            position: { x: 10, y: 20, width: 30, height: 15 },
+            original: 'Fallback text',
+            translated: 'Văn bản dự phòng',
           },
+        ],
+      });
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'https://api.openrouter.ai/api',
+        {
+          model: 'test-model',
+          messages: [
+            {
+              role: 'system',
+              content: expect.stringContaining('visual translation assistant'),
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'Detect and translate all text in this image:' },
+                {
+                  type: 'image_url',
+                  image_url: `data:${mockImageFile.mimetype};base64,${mockImageFile.buffer.toString('base64')}`,
+                },
+              ],
+            },
+          ],
+          temperature: 0,
+          response_format: { type: 'json_object' },
         },
+        expect.any(Object),
       );
     });
 
@@ -646,27 +927,101 @@ describe('TranslatorService', () => {
 
       for (const format of imageFormats) {
         const mockImageFile = createMockImageFile(format.mimetype, 5000, format.filename);
-        mockedAxios.post.mockResolvedValue(mockImageTranslationResponse);
+        
+        // Since Google Vision fails, this will fallback to AI vision which needs JSON response
+        mockVisionClient.textDetection.mockRejectedValue(new Error('Vision API not available'));
+        mockedAxios.post.mockResolvedValue(mockAIVisionJSONResponse);
 
         const result = await service.translateImageDirect(mockImageFile, 'Spanish');
 
-        expect(result).toBe('Translated text from image');
-        expect(mockedAxios.post).toHaveBeenCalledWith(
-          expect.any(String),
-          expect.objectContaining({
-            messages: expect.arrayContaining([
-              expect.objectContaining({
-                content: expect.arrayContaining([
-                  expect.objectContaining({
-                    image_url: expect.stringContaining(format.mimetype),
-                  }),
-                ]),
-              }),
-            ]),
-          }),
-          expect.any(Object),
-        );
+        expect(result.segments).toHaveLength(1);
+        expect(result.segments[0].original).toBe('Sample text');
+        expect(result.segments[0].translated).toBe('Văn bản mẫu');
       }
+    });
+
+    it('should map multiple translated lines back to multiple segments from Vision', async () => {
+      const mockImageFile = createMockImageFile();
+
+      // Build a Vision response with two paragraphs (two segments)
+      const twoParagraphs = {
+        textAnnotations: [
+          { description: 'Hello World' },
+        ],
+        fullTextAnnotation: {
+          pages: [
+            {
+              width: 800,
+              height: 600,
+              blocks: [
+                { paragraphs: [
+                  { words: [
+                    { symbols: [{ text: 'H' }, { text: 'i' }], boundingBox: { vertices: [{x:5,y:5},{x:25,y:5},{x:25,y:20},{x:5,y:20}] } },
+                  ] },
+                ]},
+                { paragraphs: [
+                  { words: [
+                    { symbols: [{ text: 'B' }, { text: 'y' }, { text: 'e' }], boundingBox: { vertices: [{x:10,y:30},{x:40,y:30},{x:40,y:50},{x:10,y:50}] } },
+                  ] },
+                ]},
+              ],
+            },
+          ],
+        },
+      };
+
+      ;(mockVisionClient as any).textDetection.mockResolvedValue([
+        twoParagraphs,
+      ] as any);
+
+      mockedAxios.post.mockResolvedValue({
+        data: {
+          choices: [
+            { message: { content: 'Xin chào\nTạm biệt' } },
+          ],
+        },
+      });
+
+      const result = await service.translateImageDirect(mockImageFile, 'Vietnamese');
+      expect(result.segments).toHaveLength(2);
+      expect(result.segments[0].translated).toBe('Xin chào');
+      expect(result.segments[1].translated).toBe('Tạm biệt');
+    });
+
+    it('should fallback to AI vision when batch translation returns empty', async () => {
+      const mockImageFile = createMockImageFile();
+
+      // Vision detects one segment
+      ;(mockVisionClient as any).textDetection.mockResolvedValue([
+        {
+          textAnnotations: [{ description: 'Sample' }],
+          fullTextAnnotation: {
+            pages: [
+              { width: 100, height: 100, blocks: [ { paragraphs: [ { words: [ { symbols: [{text:'S'}], boundingBox:{vertices:[{x:1,y:1},{x:2,y:1},{x:2,y:2},{x:1,y:2}]}} ] } ] } ] },
+            ],
+          },
+        },
+      ] as any);
+
+      // First call returns empty content to trigger error -> fallback
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: { choices: [{ message: { content: '   ' } }] } })
+        .mockResolvedValueOnce({
+          data: {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({ segments: [{ position: {x:10,y:10,width:10,height:10}, original: 'Sample', translated: 'Mẫu'}] }),
+                },
+              },
+            ],
+          },
+        });
+
+      const result = await service.translateImageDirect(mockImageFile, 'Vietnamese');
+      expect(result).toEqual({ segments: [ expect.objectContaining({ translated: 'Mẫu' }) ] });
+      // Ensure two axios calls (batch + fallback)
+      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
     });
 
     it.skip('should handle missing environment variables', async () => {
@@ -678,31 +1033,42 @@ describe('TranslatorService', () => {
       ).rejects.toThrow('Missing OpenRouter API configuration');
     });
 
-    it('should handle API errors', async () => {
+    it('should handle API errors in fallback mode', async () => {
       const mockImageFile = createMockImageFile();
-      mockedAxios.post.mockRejectedValue(new Error('Vision API Error'));
+      
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Vision API error'));
+      mockedAxios.post.mockRejectedValue(new Error('Translation API error'));
 
       await expect(
         service.translateImageDirect(mockImageFile, 'Vietnamese'),
-      ).rejects.toThrow('Vision API Error');
+      ).rejects.toThrow('Translation API error');
     });
 
-    it('should handle invalid API response structure', async () => {
+    it('should handle invalid JSON response in fallback mode', async () => {
       const mockImageFile = createMockImageFile();
-      mockedAxios.post.mockResolvedValue({
+      const invalidResponse = {
         data: {
-          choices: [],
+          choices: [
+            {
+              message: {
+                content: 'Invalid JSON content',
+              },
+            },
+          ],
         },
-      });
+      };
+
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Vision API error'));
+      mockedAxios.post.mockResolvedValue(invalidResponse);
 
       await expect(
         service.translateImageDirect(mockImageFile, 'Vietnamese'),
-      ).rejects.toThrow('Invalid or empty AI response');
+      ).rejects.toThrow('Failed to parse AI response as JSON');
     });
 
-    it('should handle empty response content', async () => {
+    it('should handle empty response content in fallback mode', async () => {
       const mockImageFile = createMockImageFile();
-      mockedAxios.post.mockResolvedValue({
+      const emptyResponse = {
         data: {
           choices: [
             {
@@ -712,7 +1078,10 @@ describe('TranslatorService', () => {
             },
           ],
         },
-      });
+      };
+
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Vision API error'));
+      mockedAxios.post.mockResolvedValue(emptyResponse);
 
       await expect(
         service.translateImageDirect(mockImageFile, 'Vietnamese'),
@@ -742,30 +1111,44 @@ describe('TranslatorService', () => {
       expect(result).toBe('Alternative format translation');
     });
 
-    it('should trim whitespace from response', async () => {
+    it('should handle missing segments in fallback response', async () => {
       const mockImageFile = createMockImageFile();
+      const responseWithoutSegments = {
+        data: {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ other_data: 'something' }),
+              },
+            },
+          ],
+        },
+      };
+
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Vision API error'));
+      mockedAxios.post.mockResolvedValue(responseWithoutSegments);
+
+      await expect(
+        service.translateImageDirect(mockImageFile, 'Vietnamese'),
+      ).rejects.toThrow('Invalid response structure: missing segments array');
+    });
+
+    it('should convert image buffer to base64 correctly in fallback mode', async () => {
+      const mockImageFile = createMockImageFile('image/png', 1000, 'test.png');
+      const expectedBase64 = mockImageFile.buffer.toString('base64');
+      
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Vision API error'));
       mockedAxios.post.mockResolvedValue({
         data: {
           choices: [
             {
               message: {
-                content: '  Translated text with spaces  ',
+                content: JSON.stringify({ segments: [] }),
               },
             },
           ],
         },
       });
-
-      const result = await service.translateImageDirect(mockImageFile, 'German');
-
-      expect(result).toBe('Translated text with spaces');
-    });
-
-    it('should convert image buffer to base64 correctly', async () => {
-      const mockImageFile = createMockImageFile('image/png', 1000, 'test.png');
-      const expectedBase64 = mockImageFile.buffer.toString('base64');
-      
-      mockedAxios.post.mockResolvedValue(mockImageTranslationResponse);
 
       await service.translateImageDirect(mockImageFile, 'Japanese');
 
@@ -791,7 +1174,9 @@ describe('TranslatorService', () => {
       const mockImageFile = createMockImageFile();
       const targetLanguage = 'Korean';
       
-      mockedAxios.post.mockResolvedValue(mockImageTranslationResponse);
+      // Test fallback AI vision with specific target language
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Google Vision not available'));
+      mockedAxios.post.mockResolvedValue(mockAIVisionJSONResponse);
 
       await service.translateImageDirect(mockImageFile, targetLanguage);
 
@@ -818,11 +1203,13 @@ describe('TranslatorService', () => {
         size: largeImageBuffer.length,
       };
       
-      mockedAxios.post.mockResolvedValue(mockImageTranslationResponse);
+      // Test fallback with large file
+      mockVisionClient.textDetection.mockRejectedValue(new Error('Google Vision not available'));
+      mockedAxios.post.mockResolvedValue(mockAIVisionJSONResponse);
 
       const result = await service.translateImageDirect(mockImageFile, 'Vietnamese');
 
-      expect(result).toBe('Translated text from image');
+      expect(result.segments).toHaveLength(1);
       expect(mockedAxios.post).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
@@ -831,7 +1218,7 @@ describe('TranslatorService', () => {
               content: expect.arrayContaining([
                 {
                   type: 'image_url',
-                  image_url: expect.stringContaining('base64'),
+                  image_url: `data:${mockImageFile.mimetype};base64,${largeImageBuffer.toString('base64')}`,
                 },
               ]),
             }),

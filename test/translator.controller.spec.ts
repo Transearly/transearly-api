@@ -511,16 +511,22 @@ describe('TranslatorController', () => {
     it('should translate image successfully', async () => {
       const mockImageFile = createMockImageFile('image/jpeg', 5000, 'test.jpg');
       const mockTargetLanguage = 'Vietnamese';
-      const mockTranslatedText = 'Translated text from image';
+      const mockSegments = [
+        {
+          position: { x: 10, y: 20, width: 30, height: 15 },
+          original: 'Sample text',
+          translated: 'Văn bản mẫu',
+        },
+      ];
 
-      mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+      mockTranslatorService.translateImageDirect.mockResolvedValue({ segments: mockSegments });
 
       const result = await controller.translateImageWithAI(mockImageFile, mockTargetLanguage);
 
       expect(result).toEqual({
         success: true,
         targetLanguage: mockTargetLanguage,
-        translatedText: mockTranslatedText,
+        segments: mockSegments,
       });
 
       expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
@@ -531,13 +537,20 @@ describe('TranslatorController', () => {
 
     it('should use default target language when not provided', async () => {
       const mockImageFile = createMockImageFile('image/png', 3000, 'test.png');
-      const mockTranslatedText = 'Default language translation';
+      const mockSegments = [
+        {
+          position: { x: 5, y: 10, width: 50, height: 20 },
+          original: 'Default text',
+          translated: 'Văn bản mặc định',
+        },
+      ];
 
-      mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+      mockTranslatorService.translateImageDirect.mockResolvedValue({ segments: mockSegments });
 
       const result = await controller.translateImageWithAI(mockImageFile);
 
       expect(result.targetLanguage).toBe('Vietnamese');
+      expect(result.segments).toEqual(mockSegments);
       expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
         mockImageFile,
         'Vietnamese',
@@ -565,13 +578,19 @@ describe('TranslatorController', () => {
 
       for (const format of imageFormats) {
         const mockImageFile = createMockImageFile(format.mimetype, 4000, format.filename);
-        const mockTranslatedText = `Translated from ${format.filename}`;
+        const mockSegments = [
+          {
+            position: { x: 0, y: 0, width: 100, height: 50 },
+            original: `Text from ${format.filename}`,
+            translated: `Văn bản từ ${format.filename}`,
+          },
+        ];
 
-        mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+        mockTranslatorService.translateImageDirect.mockResolvedValue({ segments: mockSegments });
 
         const result = await controller.translateImageWithAI(mockImageFile, 'Spanish');
 
-        expect(result.translatedText).toBe(mockTranslatedText);
+        expect(result.segments).toEqual(mockSegments);
         expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
           mockImageFile,
           'Spanish',
@@ -599,13 +618,19 @@ describe('TranslatorController', () => {
 
     it('should handle large image files', async () => {
       const largeImageFile = createMockImageFile('image/jpeg', 10 * 1024 * 1024, 'large.jpg'); // 10MB
-      const mockTranslatedText = 'Translation from large image';
+      const mockSegments = [
+        {
+          position: { x: 15, y: 25, width: 60, height: 30 },
+          original: 'Large image text',
+          translated: 'Văn bản ảnh lớn',
+        },
+      ];
 
-      mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+      mockTranslatorService.translateImageDirect.mockResolvedValue({ segments: mockSegments });
 
       const result = await controller.translateImageWithAI(largeImageFile, 'German');
 
-      expect(result.translatedText).toBe(mockTranslatedText);
+      expect(result.segments).toEqual(mockSegments);
       expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
         largeImageFile,
         'German',
@@ -617,13 +642,19 @@ describe('TranslatorController', () => {
       const languages = ['Spanish', 'French', 'German', 'Japanese', 'Korean'];
 
       for (const language of languages) {
-        const mockTranslatedText = `Translation in ${language}`;
-        mockTranslatorService.translateImageDirect.mockResolvedValue(mockTranslatedText);
+        const mockSegments = [
+          {
+            position: { x: 10, y: 10, width: 40, height: 20 },
+            original: 'Hello world',
+            translated: `Translation in ${language}`,
+          },
+        ];
+        mockTranslatorService.translateImageDirect.mockResolvedValue({ segments: mockSegments });
 
         const result = await controller.translateImageWithAI(mockImageFile, language);
 
         expect(result.targetLanguage).toBe(language);
-        expect(result.translatedText).toBe(mockTranslatedText);
+        expect(result.segments).toEqual(mockSegments);
         expect(mockTranslatorService.translateImageDirect).toHaveBeenCalledWith(
           mockImageFile,
           language,
@@ -650,15 +681,29 @@ describe('TranslatorController', () => {
     it('should handle empty translation results gracefully', async () => {
       const mockImageFile = createMockImageFile();
       
+      mockTranslatorService.translateImageDirect.mockResolvedValue({ segments: [] });
+
+      const result = await controller.translateImageWithAI(mockImageFile, 'Vietnamese');
+
+      expect(result).toEqual({
+        success: true,
+        targetLanguage: 'Vietnamese',
+        segments: [],
+      });
+    });
+
+    it('should handle Vision API errors gracefully', async () => {
+      const mockImageFile = createMockImageFile();
+      
       mockTranslatorService.translateImageDirect.mockRejectedValue(
-        new Error('Invalid or empty AI response.')
+        new Error('Google Cloud Vision API error')
       );
 
       await expect(
         controller.translateImageWithAI(mockImageFile, 'Vietnamese'),
       ).rejects.toThrow(
         new HttpException(
-          'AI image translation failed: Invalid or empty AI response.',
+          'AI image translation failed: Google Cloud Vision API error',
           HttpStatus.INTERNAL_SERVER_ERROR,
         ),
       );
