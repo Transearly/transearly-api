@@ -304,6 +304,23 @@ describe('TranslatorService', () => {
 
       expect(result).toEqual(mockJob);
     });
+
+    it('should default target language to Vietnamese when undefined', async () => {
+      const mockJob = { id: mockJobId };
+      mockQueue.add.mockResolvedValue(mockJob);
+
+      await service.startTranslationJob(
+        mockFile,
+        undefined as any,
+        mockSocketId,
+        false,
+      );
+
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        expect.objectContaining({ targetLanguage: 'Vietnamese' }),
+        expect.any(Object),
+      );
+    });
   });
 
   describe('getJobStatus', () => {
@@ -456,14 +473,6 @@ describe('TranslatorService', () => {
           },
         },
       );
-    });
-
-    it.skip('should handle missing environment variables', async () => {
-      process.env.OPENROUTER_API_KEY = '';
-
-      await expect(
-        service.translateTextDirect('Hello', 'Vietnamese'),
-      ).rejects.toThrow('Missing OpenRouter API configuration');
     });
 
     it('should handle API errors', async () => {
@@ -997,6 +1006,72 @@ describe('TranslatorService', () => {
       expect(result.segments[1].translated).toBe('Tạm biệt');
     });
 
+    it('should leave extra segments untranslated when AI returns fewer lines', async () => {
+      const mockImageFile = createMockImageFile();
+
+      // Vision detects two segments
+      (mockVisionClient as any).textDetection.mockResolvedValue([
+        {
+          textAnnotations: [{ description: 'Hello World' }],
+          fullTextAnnotation: {
+            pages: [
+              {
+                width: 800,
+                height: 600,
+                blocks: [
+                  { paragraphs: [ { words: [ { symbols: [{ text: 'H' }], boundingBox: { vertices: [{x:5,y:5},{x:25,y:5},{x:25,y:20},{x:5,y:20}] } } ] } ] },
+                  { paragraphs: [ { words: [ { symbols: [{ text: 'B' }], boundingBox: { vertices: [{x:10,y:30},{x:40,y:30},{x:40,y:50},{x:10,y:50}] } } ] } ] },
+                ],
+              },
+            ],
+          },
+        },
+      ] as any);
+
+      // AI returns only one translated line
+      mockedAxios.post.mockResolvedValue({
+        data: { choices: [ { message: { content: 'Xin chào' } } ] },
+      });
+
+      const result = await service.translateImageDirect(mockImageFile, 'Vietnamese');
+      expect(result.segments).toHaveLength(2);
+      expect(result.segments[0].translated).toBe('Xin chào');
+      expect(result.segments[1].translated).toBe('');
+    });
+
+    it('should ignore extra AI lines when more than detected segments', async () => {
+      const mockImageFile = createMockImageFile();
+
+      // Vision detects one segment
+      (mockVisionClient as any).textDetection.mockResolvedValue([
+        {
+          textAnnotations: [{ description: 'Hello' }],
+          fullTextAnnotation: {
+            pages: [
+              {
+                width: undefined,
+                height: undefined,
+                blocks: [ { paragraphs: [ { words: [ { symbols: [{ text: 'H' }], boundingBox: { vertices: [{x:100,y:200},{x:200,y:200},{x:200,y:250},{x:100,y:250}] } } ] } ] } ],
+              },
+            ],
+          },
+        },
+      ] as any);
+
+      // AI returns more lines than segments
+      mockedAxios.post.mockResolvedValue({
+        data: { choices: [ { message: { content: 'Xin chào\nDòng thừa\nDòng thừa 2' } } ] },
+      });
+
+      const result = await service.translateImageDirect(mockImageFile, 'Vietnamese');
+      expect(result.segments).toHaveLength(1);
+      expect(result.segments[0].translated).toBe('Xin chào');
+      // ensure position computed even with default image size 1000 fallback
+      expect(result.segments[0].position).toEqual(
+        expect.objectContaining({ x: expect.any(Number), y: expect.any(Number), width: expect.any(Number), height: expect.any(Number) })
+      );
+    });
+
     it('should fallback to AI vision when batch translation returns empty', async () => {
       const mockImageFile = createMockImageFile();
 
@@ -1033,14 +1108,6 @@ describe('TranslatorService', () => {
       expect(mockedAxios.post).toHaveBeenCalledTimes(2);
     });
 
-    it.skip('should handle missing environment variables', async () => {
-      process.env.OPENROUTER_API_KEY = '';
-      const mockImageFile = createMockImageFile();
-
-      await expect(
-        service.translateImageDirect(mockImageFile, 'Vietnamese'),
-      ).rejects.toThrow('Missing OpenRouter API configuration');
-    });
 
     it('should handle API errors in fallback mode', async () => {
       const mockImageFile = createMockImageFile();
@@ -1095,29 +1162,6 @@ describe('TranslatorService', () => {
       await expect(
         service.translateImageDirect(mockImageFile, 'Vietnamese'),
       ).rejects.toThrow('Invalid or empty AI response');
-    });
-
-    it.skip('should handle alternative response format', async () => {
-      const mockImageFile = createMockImageFile();
-      mockedAxios.post.mockResolvedValue({
-        data: {
-          choices: [
-            {
-              message: {
-                content: [
-                  {
-                    text: 'Alternative format translation',
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      });
-
-      const result = await service.translateImageDirect(mockImageFile, 'French');
-
-      expect(result).toBe('Alternative format translation');
     });
 
     it('should handle missing segments in fallback response', async () => {
@@ -1481,6 +1525,34 @@ describe('TranslatorService', () => {
       await expect(
         service.translateAudioDirect(mockAudioFile, 'en', 'Vietnamese'),
       ).rejects.toThrow('Audio translation failed: Translation API error');
+    });
+
+    it('should not include alternativeLanguageCodes for specific source language', async () => {
+      const mockAudioFile = createMockAudioFile('audio/wav', 50000, 'test.wav');
+
+      mockSpeechClient.recognize.mockResolvedValue([
+        {
+          results: [
+            {
+              alternatives: [{ transcript: 'Xin chao' }],
+              languageCode: 'vi-VN',
+              resultEndTime: { seconds: 8 },
+            },
+          ],
+        },
+      ]);
+
+      mockedAxios.post.mockResolvedValue({
+        data: { choices: [ { message: { content: 'Hello' } } ] },
+      });
+
+      await service.translateAudioDirect(mockAudioFile, 'vi', 'English');
+
+      expect(mockSpeechClient.recognize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.not.objectContaining({ alternativeLanguageCodes: expect.anything() }),
+        }),
+      );
     });
   });
 

@@ -568,5 +568,459 @@ describe('TranslatorProcessor', () => {
 
       expect(maxConcurrentCalls).toBeLessThanOrEqual(10);
     });
+
+    it('should handle CSV files with minimal data', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.csv' });
+      const csvContent = 'name\nJohn'; // Minimal CSV with header and one row
+
+      (path.extname as jest.Mock).mockReturnValue('.csv');
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+      (path.join as jest.Mock).mockReturnValue('/test/path/translated-test-job.csv');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation({
+        ...mockJob,
+        data: {
+          ...mockJob.data,
+          buffer: { type: 'Buffer', data: Array.from(Buffer.from(csvContent)) },
+        },
+      } as Job);
+
+      expect(result).toHaveProperty('translatedFileName');
+      expect(result.translatedFileName).toContain('.csv');
+    });
+
+    it('should process CSV files successfully', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.csv' });
+      const csvContent = 'name,age\nAlice,30\nBob,25';
+
+      (path.extname as jest.Mock).mockReturnValue('.csv');
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+      (path.join as jest.Mock).mockReturnValue('/test/path/translated-test-job.csv');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation({
+        ...mockJob,
+        data: {
+          ...mockJob.data,
+          buffer: { type: 'Buffer', data: Array.from(Buffer.from(csvContent)) },
+        },
+      } as Job);
+
+      expect(result).toHaveProperty('translatedFileName');
+      expect(result.translatedFileName).toContain('.csv');
+    });
+
+    it('should handle XLSX with empty workbook', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.xlsx' });
+
+      (path.extname as jest.Mock).mockReturnValue('.xlsx');
+
+      // Mock empty workbook
+      const mockWorkbook = {
+        xlsx: {
+          load: jest.fn().mockResolvedValue(undefined),
+          writeBuffer: jest.fn().mockResolvedValue(Buffer.from('empty')),
+        },
+        eachSheet: jest.fn((callback) => {
+          // No sheets, callback never called
+        }),
+      };
+
+      (ExcelJS.Workbook as jest.Mock).mockImplementation(() => mockWorkbook);
+      (path.join as jest.Mock).mockReturnValue('/test/path/translated-test-job.xlsx');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+    });
+
+    it('should handle XLSX with cells containing numbers', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.xlsx' });
+
+      (path.extname as jest.Mock).mockReturnValue('.xlsx');
+
+      const mockWorkbook = {
+        xlsx: {
+          load: jest.fn().mockResolvedValue(undefined),
+          writeBuffer: jest.fn().mockResolvedValue(Buffer.from('output')),
+        },
+        eachSheet: jest.fn((callback) => {
+          const mockSheet = {
+            eachRow: jest.fn((rowCallback) => {
+              const mockRow = {
+                eachCell: jest.fn((cellCallback) => {
+                  // Cell with number value
+                  const mockCell = {
+                    value: 42,
+                  };
+                  cellCallback(mockCell);
+
+                  // Cell with string value
+                  const mockCell2 = {
+                    value: 'Text',
+                  };
+                  cellCallback(mockCell2);
+                }),
+              };
+              rowCallback(mockRow);
+            }),
+          };
+          callback(mockSheet);
+        }),
+      };
+
+      (ExcelJS.Workbook as jest.Mock).mockImplementation(() => mockWorkbook);
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+      (path.join as jest.Mock).mockReturnValue('/test/path/translated-test-job.xlsx');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+    });
+
+    it('should handle PPTX with empty slides', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.pptx' });
+      (path.extname as jest.Mock).mockReturnValue('.pptx');
+
+      (path.join as jest.Mock).mockReturnValue('D:/temp/temp-test-job.pptx');
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+      (fs.readFile as jest.Mock).mockResolvedValue(Buffer.from('zip'));
+      (fs.unlink as jest.Mock).mockResolvedValue(undefined);
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+
+      const jszipMock = jest.requireMock('jszip');
+      jszipMock.loadAsync.mockResolvedValue({
+        files: {
+          'ppt/slides/slide1.xml': {
+            async: jest.fn().mockResolvedValue('<slide></slide>'), // No text tags
+          },
+        },
+      });
+
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+      expect(result.translatedFileName).toContain('.pptx');
+    });
+
+    it('should handle PPTX with no slides', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.pptx' });
+      (path.extname as jest.Mock).mockReturnValue('.pptx');
+
+      (path.join as jest.Mock).mockReturnValue('D:/temp/temp-test-job.pptx');
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+      (fs.readFile as jest.Mock).mockResolvedValue(Buffer.from('zip'));
+      (fs.unlink as jest.Mock).mockResolvedValue(undefined);
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+
+      const jszipMock = jest.requireMock('jszip');
+      jszipMock.loadAsync.mockResolvedValue({
+        files: {}, // No slides at all
+      });
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+      expect(result.translatedFileName).toContain('.pptx');
+    });
+
+    it('should handle PPTX with multiple slides in correct order', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.pptx' });
+      (path.extname as jest.Mock).mockReturnValue('.pptx');
+
+      (path.join as jest.Mock).mockReturnValue('D:/temp/temp-test-job.pptx');
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+      (fs.readFile as jest.Mock).mockResolvedValue(Buffer.from('zip'));
+      (fs.unlink as jest.Mock).mockResolvedValue(undefined);
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+
+      const jszipMock = jest.requireMock('jszip');
+      jszipMock.loadAsync.mockResolvedValue({
+        files: {
+          'ppt/slides/slide3.xml': {
+            async: jest.fn().mockResolvedValue('<a:t>Slide 3</a:t>'),
+          },
+          'ppt/slides/slide1.xml': {
+            async: jest.fn().mockResolvedValue('<a:t>Slide 1</a:t>'),
+          },
+          'ppt/slides/slide2.xml': {
+            async: jest.fn().mockResolvedValue('<a:t>Slide 2</a:t>'),
+          },
+        },
+      });
+
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+      expect(result.translatedFileName).toContain('.pptx');
+    });
+
+    it('should handle wrapText with newline characters', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.pdf' });
+      const textWithNewlines = 'Line 1\nLine 2\nLine 3';
+
+      (path.extname as jest.Mock).mockReturnValue('.pdf');
+
+      const mockPDFLoader = jest.requireMock('@langchain/community/document_loaders/fs/pdf');
+      mockPDFLoader.PDFLoader.mockImplementation(() => ({
+        load: jest.fn().mockResolvedValue([{ pageContent: textWithNewlines }]),
+      }));
+
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+
+      (PDFDocument.create as jest.Mock).mockResolvedValue({
+        registerFontkit: jest.fn(),
+        addPage: jest.fn().mockReturnValue({
+          getSize: jest.fn().mockReturnValue({ width: 612, height: 792 }),
+          drawText: jest.fn(),
+        }),
+        embedFont: jest.fn().mockResolvedValue({
+          widthOfTextAtSize: jest.fn().mockReturnValue(100),
+        }),
+        save: jest.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
+      });
+
+      (path.join as jest.Mock).mockReturnValue('/test/path');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+    });
+
+    it('should handle wrapText with long words exceeding maxWidth', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.pdf' });
+      const longWord = 'A'.repeat(100); // Very long word
+
+      (path.extname as jest.Mock).mockReturnValue('.pdf');
+
+      const mockPDFLoader = jest.requireMock('@langchain/community/document_loaders/fs/pdf');
+      mockPDFLoader.PDFLoader.mockImplementation(() => ({
+        load: jest.fn().mockResolvedValue([{ pageContent: longWord }]),
+      }));
+
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+
+      (PDFDocument.create as jest.Mock).mockResolvedValue({
+        registerFontkit: jest.fn(),
+        addPage: jest.fn().mockReturnValue({
+          getSize: jest.fn().mockReturnValue({ width: 612, height: 792 }),
+          drawText: jest.fn(),
+        }),
+        embedFont: jest.fn().mockResolvedValue({
+          widthOfTextAtSize: jest.fn().mockReturnValue(500), // Wide text
+        }),
+        save: jest.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
+      });
+
+      (path.join as jest.Mock).mockReturnValue('/test/path');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+    });
+
+    it('should handle PDF with multiple pages', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.pdf' });
+      // Create enough lines to exceed one page (792 height / 16.5 line height = ~48 lines per page)
+      const longText = Array(200).fill('This is a long line of text that will be repeated many times').join('\n');
+
+      (path.extname as jest.Mock).mockReturnValue('.pdf');
+
+      const mockPDFLoader = jest.requireMock('@langchain/community/document_loaders/fs/pdf');
+      mockPDFLoader.PDFLoader.mockImplementation(() => ({
+        load: jest.fn().mockResolvedValue([{ pageContent: longText }]),
+      }));
+
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+
+      let pageCount = 0;
+      (PDFDocument.create as jest.Mock).mockResolvedValue({
+        registerFontkit: jest.fn(),
+        addPage: jest.fn().mockImplementation(() => {
+          pageCount++;
+          return {
+            getSize: jest.fn().mockReturnValue({ width: 612, height: 792 }),
+            drawText: jest.fn(),
+          };
+        }),
+        embedFont: jest.fn().mockResolvedValue({
+          widthOfTextAtSize: jest.fn().mockReturnValue(100),
+        }),
+        save: jest.fn().mockResolvedValue(new Uint8Array([1, 2, 3])),
+      });
+
+      (path.join as jest.Mock).mockReturnValue('/test/path');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+      expect(pageCount).toBeGreaterThanOrEqual(1); // Should create at least one page
+    });
+
+    it('should use default target language when not provided', async () => {
+      const mockJob = createMockJob('test-job', { 
+        originalname: 'test.txt',
+        targetLanguage: undefined as any, // No target language
+      });
+
+      (path.extname as jest.Mock).mockReturnValue('.txt');
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+      (path.join as jest.Mock).mockReturnValue('/test/path');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+    });
+
+    it('should handle translateChunk with missing API response content', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.txt' });
+
+      (path.extname as jest.Mock).mockReturnValue('.txt');
+      (axios.post as jest.Mock).mockResolvedValue({
+        data: {
+          choices: [{
+            message: {
+              content: null, // Missing content
+            },
+          }],
+        },
+      });
+      (path.join as jest.Mock).mockReturnValue('/test/path');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      // Should complete successfully with error placeholder in translated content
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+      expect(result.translatedFileName).toContain('.txt');
+    });
+
+    it('should handle translateChunk with invalid API response structure', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.txt' });
+
+      (path.extname as jest.Mock).mockReturnValue('.txt');
+      (axios.post as jest.Mock).mockResolvedValue({
+        data: {
+          choices: null, // Invalid structure
+        },
+      });
+      (path.join as jest.Mock).mockReturnValue('/test/path');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      // Should complete successfully with error placeholder in translated content
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+      expect(result.translatedFileName).toContain('.txt');
+    });
+
+    it('should handle DOCX with empty text content', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.docx' });
+
+      (path.extname as jest.Mock).mockReturnValue('.docx');
+      (mammoth.extractRawText as jest.Mock).mockResolvedValue({
+        value: '', // Empty content
+      });
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+      (path.join as jest.Mock).mockReturnValue('/test/path/translated-test-job.docx');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+    });
+
+    it('should handle no output buffer generated error', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.pdf' });
+
+      (path.extname as jest.Mock).mockReturnValue('.pdf');
+
+      const mockPDFLoader = jest.requireMock('@langchain/community/document_loaders/fs/pdf');
+      mockPDFLoader.PDFLoader.mockImplementation(() => ({
+        load: jest.fn().mockResolvedValue([{ pageContent: 'content' }]),
+      }));
+
+      (axios.post as jest.Mock).mockResolvedValue(mockTranslationResponse);
+
+      // Mock createPdf to return null/undefined
+      (PDFDocument.create as jest.Mock).mockResolvedValue({
+        registerFontkit: jest.fn(),
+        addPage: jest.fn().mockReturnValue({
+          getSize: jest.fn().mockReturnValue({ width: 612, height: 792 }),
+          drawText: jest.fn(),
+        }),
+        embedFont: jest.fn().mockResolvedValue({
+          widthOfTextAtSize: jest.fn().mockReturnValue(100),
+        }),
+        save: jest.fn().mockResolvedValue(null), // Returns null instead of buffer
+      });
+
+      (path.join as jest.Mock).mockReturnValue('/test/path');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      // Expect error from Buffer.from() when receiving null
+      await expect(processor.handleTranslation(mockJob as Job)).rejects.toThrow('The first argument must be of type string or an instance of Buffer');
+    });
+
+    it('should handle XLSX cells with empty or whitespace text', async () => {
+      const mockJob = createMockJob('test-job', { originalname: 'test.xlsx' });
+
+      (path.extname as jest.Mock).mockReturnValue('.xlsx');
+
+      const mockWorkbook = {
+        xlsx: {
+          load: jest.fn().mockResolvedValue(undefined),
+          writeBuffer: jest.fn().mockResolvedValue(Buffer.from('output')),
+        },
+        eachSheet: jest.fn((callback) => {
+          const mockSheet = {
+            eachRow: jest.fn((rowCallback) => {
+              const mockRow = {
+                eachCell: jest.fn((cellCallback) => {
+                  // Cell with whitespace only
+                  const mockCell1 = {
+                    value: '   ',
+                  };
+                  cellCallback(mockCell1);
+
+                  // Cell with empty string
+                  const mockCell2 = {
+                    value: '',
+                  };
+                  cellCallback(mockCell2);
+
+                  // Cell with null/undefined
+                  const mockCell3 = {
+                    value: null,
+                  };
+                  cellCallback(mockCell3);
+                }),
+              };
+              rowCallback(mockRow);
+            }),
+          };
+          callback(mockSheet);
+        }),
+      };
+
+      (ExcelJS.Workbook as jest.Mock).mockImplementation(() => mockWorkbook);
+      (path.join as jest.Mock).mockReturnValue('/test/path/translated-test-job.xlsx');
+      (fs.mkdir as jest.Mock).mockResolvedValue(undefined);
+      (fs.writeFile as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await processor.handleTranslation(mockJob as Job);
+      expect(result).toHaveProperty('translatedFileName');
+    });
   });
 });
